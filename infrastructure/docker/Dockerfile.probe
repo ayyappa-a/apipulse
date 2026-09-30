@@ -1,0 +1,15 @@
+# APIPulse — Dockerfile for the Probe Worker
+FROM golang:1.27-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /apipulse-probe ./cmd/probe
+
+FROM alpine:3.20
+RUN addgroup -S apipulse && adduser -S apipulse -G apipulse
+WORKDIR /app
+COPY --from=builder /apipulse-probe .
+USER apipulse
+EXPOSE 8081
+ENTRYPOINT ["./apipulse-probe"]

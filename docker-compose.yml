@@ -1,0 +1,252 @@
+
+
+# APIPulse — Self-Contained Local Development Environment
+# ============================================================
+#
+# Credentials and configuration are loaded from .env (gitignored).
+# Copy .env.example → .env before first run.
+#
+# Services (default profile — all start with `docker compose up --build`):
+#   timescaledb  — PostgreSQL 16 + TimescaleDB (primary telemetry store)
+#   redis        — Redis 7 (hot state cache, rate limiting)
+#   vendor-mock  — Stripe-like payment vendor simulator
+#   api          — APIPulse Telemetry Gateway & REST API (Go)
+#   codebegun-demo — Demo customer service that generates OTel traces
+#
+# Optional profiles:
+#   --profile probe       — APIPulse synthetic probe worker
+#   --profile metrics     — Prometheus scraper
+#
+# Quick start:
+#   cp .env.example .env
+#   docker compose up --build
+#
+# ⚠  TimescaleDB note:
+#   We use timescale/timescaledb (official image), NOT plain postgres.
+#   The hypertable features in 001_initial_schema.up.sql require this extension.
+#   Do NOT substitute plain postgres — migrations will fail.
+#
+# ⚠  Port mapping:
+#   TimescaleDB is exposed on HOST port 5433 (not 5432) to avoid collisions
+#   with any existing local PostgreSQL installation.
+#   Inside Docker, containers always communicate on the standard port 5432
+#   via the "timescaledb" service hostname.
+#   For direct local `go run ./cmd/api`, set:
+#     DATABASE_URL=postgres://apipulse:apipulse_local_dev@localhost:5433/apipulse?sslmode=disable
+
+services:
+
+  # ============================================================
+  # TimescaleDB / PostgreSQL
+  #
+  # Image: timescale/timescaledb:latest-pg16 (official)
+  # The timescaledb extension is pre-installed.
+  # Do NOT substitute plain postgres — migrations use hypertables.
+  #
+  # Host port: 5433 (not 5432) to avoid local PG collision.
+  # Internal port: 5432 (standard PG port, used by all containers).
+  # Named volume preserves data across `docker compose restart`.
+  # ============================================================
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5433:5432"       # Host: 5433 → Container: 5432 (avoids local PG collision)
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-apipulse}
+      POSTGRES_USER: ${POSTGRES_USER:-apipulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apipulse_local_dev}
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      # NOTE: We do NOT mount migrations/ into docker-entrypoint-initdb.d.
+      # APIPulse's Go migration runner (RunMigrations) handles all schema setup
+      # on startup. This prevents double-execution and ensures migration tracking
+      # in schema_migrations works correctly.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-apipulse} -d ${POSTGRES_DB:-apipulse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  # ============================================================
+  # Redis — Hot State Cache & Rate Limiter
+  #
+  # NOT the primary telemetry database.
+  # Used for: health state cache, rate limiting, probe coordination.
+  # APIPulse degrades gracefully if Redis is unavailable.
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save "" --appendonly no  # no persistence in dev; hot state is rebuilt from PG
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================================
+  # Stripe-like Payment Vendor Simulator
+  #
+  # Simulates Stripe status and latency for the demo scenario.
+  # Used by: CodeBegun Demo, APIPulse Synthetic Probe.
+  # ============================================================
+  vendor-mock:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.vendor-mock
+    ports:
+      - "9001:9001"
+    environment:
+      PORT: "9001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ============================================================
+  # APIPulse API Server
+  #
+  # Telemetry Gateway + REST API + Health Intelligence Engine.
+  # Runs DB migrations on startup (idempotent).
+  # Does NOT start until TimescaleDB passes health check.
+  # Redis failure is tolerated (graceful degradation).
+  # ============================================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: ../infrastructure/docker/Dockerfile.api
+    ports:
+      - "8080:8080"   # REST API + OTLP telemetry ingest
+      - "9090:9090"   # Prometheus metrics scrape
+    environment:
+      APIPULSE_ENV: ${APIPULSE_ENV:-development}
+      APIPULSE_HTTP_ADDR: ${APIPULSE_HTTP_ADDR:-:8080}
+      PROMETHEUS_ADDR: ${PROMETHEUS_ADDR:-:9090}
+      # DATABASE_URL uses "timescaledb" (Docker service hostname), NOT localhost.
+      DATABASE_URL: ${DATABASE_URL:-postgres://apipulse:apipulse_local_dev@timescaledb:5432/apipulse?sslmode=disable}
+      APIPULSE_STORAGE: ${APIPULSE_STORAGE:-postgres}
+      POSTGRES_MAX_CONNS: "10"
+      POSTGRES_MIN_CONNS: "2"
+      # REDIS_URL uses "redis" (Docker service hostname), NOT localhost.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      VENDOR_MOCK_URL: ${VENDOR_MOCK_URL:-http://vendor-mock:9001}
+      APIPULSE_HEALTH_EVALUATION_INTERVAL: ${APIPULSE_HEALTH_EVALUATION_INTERVAL:-5s}
+      APIPULSE_HEALTH_TARGETS: ${APIPULSE_HEALTH_TARGETS:-stripe-like:stripe:ap-south-1,stripe-like:stripe:us-east-1}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      APIPULSE_SHUTDOWN_TIMEOUT_SECONDS: "30"
+      # Migrations directory inside the container (relative to WORKDIR /app)
+      MIGRATIONS_DIR: /app/migrations
+    volumes:
+      # Mount migrations into the API container at a fixed path.
+      # The binary is at /app/apipulse-api; migrations need to be adjacent.
+      - ./backend/migrations:/app/migrations:ro
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vendor-mock:
+        condition: service_started
+    restart: on-failure
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================
+  # CodeBegun Demo Customer Service
+  #
+  # Simulates a real customer service that:
+  #   → Calls the Vendor Mock (payment processing)
+  #   → Exports traces asynchronously via OpenTelemetry → APIPulse OTLP
+  #
+  # IMPORTANT: CodeBegun is NOT synchronously dependent on APIPulse.
+  # If APIPulse is temporarily unavailable, CodeBegun continues executing
+  # its own vendor requests. OTel export will retry/fail gracefully.
+  # ============================================================
+  codebegun-demo:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.codebegun
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      VENDOR_URL: "http://vendor-mock:9001"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://api:8080"
+      DEMO_REGION: "ap-south-1"
+    depends_on:
+      vendor-mock:
+        condition: service_started
+      # NOTE: APIPulse availability is NOT a hard dependency.
+      # CodeBegun generates traffic even if APIPulse is still starting.
+    restart: unless-stopped
+
+  # ============================================================
+  # APIPulse Synthetic Probe Worker (optional — --profile probe)
+  # ============================================================
+  probe:
+    build:
+      context: ./backend
+      dockerfile: ../infrastructure/docker/Dockerfile.probe
+    environment:
+      APIPULSE_ENV: ${APIPULSE_ENV:-development}
+      APIPULSE_API_URL: "http://api:8080"
+      APIPULSE_PROBE_REGION: ${APIPULSE_PROBE_REGION:-ap-south-1}
+      DATABASE_URL: ${DATABASE_URL:-postgres://apipulse:apipulse_local_dev@timescaledb:5432/apipulse?sslmode=disable}
+      VENDOR_MOCK_URL: ${VENDOR_MOCK_URL:-http://vendor-mock:9001}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles:
+      - probe
+    restart: on-failure
+
+  # ============================================================
+  # Prometheus — optional metrics scraper (--profile metrics)
+  # ============================================================
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"   # Prometheus UI at http://localhost:9091
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    depends_on:
+      api:
+        condition: service_started
+    profiles:
+      - metrics
+    restart: unless-stopped
+
+  # ============================================================
+  # OpenTelemetry Collector (optional intermediary — --profile collector)
+  # ============================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4318:4318"   # OTLP/HTTP
+      - "4317:4317"   # OTLP/gRPC
+    depends_on:
+      - api
+    profiles:
+      - collector
+
+volumes:
+  timescaledb_data:
+    # Named volume — survives `docker compose restart` and `docker compose down`.
+    # Only destroyed by `docker compose down -v` (NEVER use during normal operation).

@@ -1,0 +1,15 @@
+# CodeBegun Demo Customer Service Dockerfile
+FROM golang:1.27-alpine AS builder
+
+WORKDIR /app
+COPY demo/go.mod demo/go.sum ./
+RUN go mod download
+
+COPY demo/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /codebegun-demo ./codebegun
+
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=builder /codebegun-demo .
+EXPOSE 8081
+ENTRYPOINT ["./codebegun-demo"]

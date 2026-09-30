@@ -1,0 +1,19 @@
+# APIPulse — Dockerfile for the API server
+# Build context: ./backend (run from repo root: docker compose up)
+FROM golang:1.27-alpine AS builder
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /apipulse-api ./cmd/api
+
+FROM alpine:3.20
+RUN addgroup -S apipulse && adduser -S apipulse -G apipulse
+WORKDIR /app
+COPY --from=builder /apipulse-api .
+USER apipulse
+EXPOSE 8080 9090
+ENTRYPOINT ["./apipulse-api"]

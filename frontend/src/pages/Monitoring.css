@@ -1,0 +1,144 @@
+/* ── Monitoring ───────────────────────────────────────────── */
+.monitoring__strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+@media (max-width: 768px) {
+  .monitoring__strip { grid-template-columns: repeat(2, 1fr); }
+}
+
+.monitoring__stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.monitoring__grid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .monitoring__grid { grid-template-columns: 1fr; }
+}
+
+/* Map */
+.monitoring__map {
+  position: relative;
+  height: 280px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 50% 60%, rgba(59,130,246,0.04) 0%, transparent 70%),
+    var(--color-bg-card);
+}
+
+.monitoring__map-bg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.monitoring__probe-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+
+.monitoring__probe-node:hover .monitoring__probe-label {
+  opacity: 1;
+}
+
+.monitoring__probe-label {
+  font-size: 9px;
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+
+/* Region Cards */
+.monitoring__region-card {
+  transition: background var(--transition-fast);
+}
+
+.monitoring__region-card--alert {
+  border-color: rgba(249, 115, 22, 0.3);
+  background: rgba(249, 115, 22, 0.04);
+}
+
+.monitoring__region-success {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* Probe Log */
+.monitoring__probe-log {
+  padding: 0;
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+.monitoring__probe-entry {
+  display: grid;
+  grid-template-columns: 10px 1fr auto auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--text-xs);
+  transition: background var(--transition-fast);
+}
+
+.monitoring__probe-entry:last-child {
+  border-bottom: none;
+}
+
+.monitoring__probe-entry:hover {
+  background: var(--color-bg-elevated);
+}
+
+.monitoring__probe-entry--new {
+  animation: slideInLeft 280ms ease;
+  background: rgba(59,130,246,0.04);
+}
+
+.monitoring__probe-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.monitoring__probe-vendor {
+  font-weight: var(--weight-medium);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitoring__probe-latency {
+  font-weight: var(--weight-bold);
+  text-align: right;
+}
+
+.monitoring__probe-time {
+  min-width: 50px;
+  text-align: right;
+}

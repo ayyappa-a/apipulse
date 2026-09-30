@@ -1,0 +1,6 @@
+scrape_configs:
+  - job_name: 'apipulse-api'
+    static_configs:
+      - targets: ['api:9090']
+    scrape_interval: 15s
+    metrics_path: /metrics
